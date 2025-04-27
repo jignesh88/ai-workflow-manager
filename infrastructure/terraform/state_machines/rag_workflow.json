@@ -1,0 +1,403 @@
+{
+  "Comment": "State machine for RAG Pipeline processing",
+  "StartAt": "ValidateInput",
+  "States": {
+    "ValidateInput": {
+      "Type": "Task",
+      "Resource": "${ValidateInputFunctionArn}",
+      "ResultPath": "$.validation",
+      "Next": "CheckValidationResult"
+    },
+    "CheckValidationResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validation.isValid",
+          "BooleanEquals": true,
+          "Next": "ProcessDataSources"
+        }
+      ],
+      "Default": "ValidationError"
+    },
+    "ValidationError": {
+      "Type": "Task",
+      "Resource": "${ErrorHandlerFunctionArn}",
+      "Parameters": {
+        "error": "ValidationError",
+        "message": "Invalid input provided for RAG pipeline",
+        "details.$": "$.validation.errors"
+      },
+      "End": true
+    },
+    "ProcessDataSources": {
+      "Type": "Map",
+      "ItemsPath": "$.dataSources",
+      "ResultPath": "$.processedDataSources",
+      "Parameters": {
+        "dataSource.$": "$$.Map.Item.Value",
+        "tenantId.$": "$.tenantId",
+        "config.$": "$.config"
+      },
+      "Iterator": {
+        "StartAt": "DetermineSourceType",
+        "States": {
+          "DetermineSourceType": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.dataSource.type",
+                "StringEquals": "website",
+                "Next": "CrawlWebsite"
+              },
+              {
+                "Variable": "$.dataSource.type",
+                "StringEquals": "api",
+                "Next": "FetchFromApi"
+              },
+              {
+                "Variable": "$.dataSource.type",
+                "StringEquals": "document",
+                "Next": "ProcessDocument"
+              }
+            ],
+            "Default": "InvalidSourceType"
+          },
+          "CrawlWebsite": {
+            "Type": "Task",
+            "Resource": "${CrawlWebsiteFunctionArn}",
+            "ResultPath": "$.crawlResult",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException", "TooManyRequestsException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "CrawlError"
+              }
+            ],
+            "Next": "ExtractText"
+          },
+          "FetchFromApi": {
+            "Type": "Task",
+            "Resource": "${FetchFromApiFunctionArn}",
+            "ResultPath": "$.apiResult",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException", "TooManyRequestsException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "ApiError"
+              }
+            ],
+            "Next": "ExtractText"
+          },
+          "ProcessDocument": {
+            "Type": "Task",
+            "Resource": "${ProcessDocumentFunctionArn}",
+            "ResultPath": "$.documentResult",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "DocumentError"
+              }
+            ],
+            "Next": "ExtractText"
+          },
+          "CrawlError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "CrawlError",
+              "message": "Failed to crawl website",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "ApiError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "ApiError",
+              "message": "Failed to fetch from API",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "DocumentError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "DocumentError",
+              "message": "Failed to process document",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "InvalidSourceType": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "InvalidSourceType",
+              "message": "Unknown data source type",
+              "dataSource.$": "$.dataSource"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "ExtractText": {
+            "Type": "Task",
+            "Resource": "${ExtractTextFunctionArn}",
+            "ResultPath": "$.extractedText",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "ExtractError"
+              }
+            ],
+            "Next": "GenerateEmbeddings"
+          },
+          "ExtractError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "ExtractError",
+              "message": "Failed to extract text",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "GenerateEmbeddings": {
+            "Type": "Task",
+            "Resource": "${GenerateEmbeddingsFunctionArn}",
+            "ResultPath": "$.embeddings",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "EmbeddingError"
+              }
+            ],
+            "Next": "StoreEmbeddings"
+          },
+          "EmbeddingError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "EmbeddingError",
+              "message": "Failed to generate embeddings",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "StoreEmbeddings": {
+            "Type": "Task",
+            "Resource": "${StoreEmbeddingsFunctionArn}",
+            "ResultPath": "$.storageResult",
+            "Retry": [
+              {
+                "ErrorEquals": ["ServiceException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "StorageError"
+              }
+            ],
+            "Next": "SourceProcessingSucceeded"
+          },
+          "StorageError": {
+            "Type": "Task",
+            "Resource": "${ErrorHandlerFunctionArn}",
+            "Parameters": {
+              "error": "StorageError",
+              "message": "Failed to store embeddings",
+              "dataSource.$": "$.dataSource",
+              "details.$": "$.error"
+            },
+            "ResultPath": "$.errorHandled",
+            "Next": "SourceProcessingFailed"
+          },
+          "SourceProcessingSucceeded": {
+            "Type": "Pass",
+            "Result": {
+              "status": "succeeded"
+            },
+            "ResultPath": "$.processingStatus",
+            "End": true
+          },
+          "SourceProcessingFailed": {
+            "Type": "Pass",
+            "Result": {
+              "status": "failed"
+            },
+            "ResultPath": "$.processingStatus",
+            "End": true
+          }
+        }
+      },
+      "Next": "ConfigureMemoryDuration"
+    },
+    "ConfigureMemoryDuration": {
+      "Type": "Task",
+      "Resource": "${ConfigureMemoryFunctionArn}",
+      "ResultPath": "$.memoryConfig",
+      "Retry": [
+        {
+          "ErrorEquals": ["ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "MemoryConfigError"
+        }
+      ],
+      "Next": "UpdateMetadata"
+    },
+    "MemoryConfigError": {
+      "Type": "Task",
+      "Resource": "${ErrorHandlerFunctionArn}",
+      "Parameters": {
+        "error": "MemoryConfigError",
+        "message": "Failed to configure memory duration",
+        "details.$": "$.error"
+      },
+      "ResultPath": "$.errorHandled",
+      "Next": "UpdateMetadata"
+    },
+    "UpdateMetadata": {
+      "Type": "Task",
+      "Resource": "${UpdateMetadataFunctionArn}",
+      "ResultPath": "$.metadataResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "MetadataError"
+        }
+      ],
+      "Next": "ScheduleNextCrawl"
+    },
+    "MetadataError": {
+      "Type": "Task",
+      "Resource": "${ErrorHandlerFunctionArn}",
+      "Parameters": {
+        "error": "MetadataError",
+        "message": "Failed to update metadata",
+        "details.$": "$.error"
+      },
+      "ResultPath": "$.errorHandled",
+      "Next": "ScheduleNextCrawl"
+    },
+    "ScheduleNextCrawl": {
+      "Type": "Task",
+      "Resource": "${ScheduleCrawlFunctionArn}",
+      "ResultPath": "$.scheduledCrawl",
+      "Retry": [
+        {
+          "ErrorEquals": ["ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ScheduleError"
+        }
+      ],
+      "Next": "AnalyzeResults"
+    },
+    "ScheduleError": {
+      "Type": "Task",
+      "Resource": "${ErrorHandlerFunctionArn}",
+      "Parameters": {
+        "error": "ScheduleError",
+        "message": "Failed to schedule next crawl",
+        "details.$": "$.error"
+      },
+      "ResultPath": "$.errorHandled",
+      "Next": "AnalyzeResults"
+    },
+    "AnalyzeResults": {
+      "Type": "Task",
+      "Resource": "${AnalyzeResultsFunctionArn}",
+      "ResultPath": "$.analysis",
+      "Next": "NotifyCompletion"
+    },
+    "NotifyCompletion": {
+      "Type": "Task",
+      "Resource": "${NotifyCompletionFunctionArn}",
+      "ResultPath": "$.notification",
+      "End": true
+    }
+  }
+}
