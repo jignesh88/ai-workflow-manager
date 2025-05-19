@@ -1,0 +1,530 @@
+service: ai-workflow-manager
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    WORKFLOW_TABLE: ${self:service}-workflows-${self:provider.stage}
+    METADATA_TABLE: ${self:service}-metadata-${self:provider.stage}
+    CONFIG_TABLE: ${self:service}-configs-${self:provider.stage}
+    DOCUMENT_BUCKET: ${self:service}-documents-${self:provider.stage}
+    AUDIO_BUCKET: ${self:service}-audio-${self:provider.stage}
+    RAG_STATE_MACHINE_ARN: !Ref RagWorkflowStateMachine
+    DLQ_URL: !Ref DeadLetterQueue
+    ERROR_NOTIFICATION_TOPIC_ARN: !Ref ErrorNotificationTopic
+    EMBEDDING_API_SECRET_ARN: !Ref EmbeddingApiSecret
+    REDIS_SECRET_ARN: !Ref RedisSecret
+    LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
+    EMBEDDING_API_URL: https://api.huggingface.co/models
+    OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+    ENVIRONMENT: ${self:provider.stage}
+    NODE_ENV: production
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+        - dynamodb:BatchGetItem
+        - dynamodb:BatchWriteItem
+      Resource:
+        - !GetAtt WorkflowTable.Arn
+        - !GetAtt MetadataTable.Arn
+        - !GetAtt ConfigTable.Arn
+        - !Join ['', [!GetAtt WorkflowTable.Arn, '/index/*']]
+        - !Join ['', [!GetAtt MetadataTable.Arn, '/index/*']]
+        - !Join ['', [!GetAtt ConfigTable.Arn, '/index/*']]
+    - Effect: Allow
+      Action:
+        - s3:GetObject
+        - s3:PutObject
+        - s3:DeleteObject
+        - s3:ListBucket
+      Resource:
+        - !GetAtt DocumentBucket.Arn
+        - !Join ['', [!GetAtt DocumentBucket.Arn, '/*']]
+        - !GetAtt AudioBucket.Arn
+        - !Join ['', [!GetAtt AudioBucket.Arn, '/*']]
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - !Ref EmbeddingApiSecret
+        - !Ref RedisSecret
+        - !Ref LiveKitSecret
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+      Resource:
+        - !GetAtt DeadLetterQueue.Arn
+    - Effect: Allow
+      Action:
+        - sns:Publish
+      Resource:
+        - !Ref ErrorNotificationTopic
+    - Effect: Allow
+      Action:
+        - cloudwatch:PutMetricData
+      Resource: '*'
+    - Effect: Allow
+      Action:
+        - states:StartExecution
+        - states:DescribeExecution
+      Resource:
+        - !Ref RagWorkflowStateMachine
+    - Effect: Allow
+      Action:
+        - es:ESHttpGet
+        - es:ESHttpPost
+        - es:ESHttpPut
+        - es:ESHttpDelete
+      Resource:
+        - !Join ['', ['arn:aws:es:', '${self:provider.region}', ':', '${aws:accountId}', ':domain/ai-workflow-manager-search-', '${self:provider.stage}', '/*']]
+    - Effect: Allow
+      Action:
+        - polly:SynthesizeSpeech
+        - transcribe:StartTranscriptionJob
+        - transcribe:GetTranscriptionJob
+      Resource: '*'
+    - Effect: Allow
+      Action:
+        - textract:StartDocumentTextDetection
+        - textract:GetDocumentTextDetection
+      Resource: '*'
+
+plugins:
+  - serverless-iam-roles-per-function
+  - serverless-offline
+
+package:
+  individually: true
+  exclude:
+    - node_modules/**
+    - '**/*.test.js'
+
+functions:
+  # API Gateway handlers
+  workflowApi:
+    handler: api/workflow_api.handler
+    events:
+      - http:
+          path: /workflows
+          method: any
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+      - http:
+          path: /workflows/{id}
+          method: any
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+      - http:
+          path: /workflows/{id}/execute
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+
+  configApi:
+    handler: api/config_api.handler
+    events:
+      - http:
+          path: /tenant/{tenantId}/config
+          method: any
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+
+  voiceApi:
+    handler: api/voice_api.handler
+    events:
+      - http:
+          path: /voice/tts
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+      - http:
+          path: /voice/stt
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+      - http:
+          path: /voice/token
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+      - http:
+          path: /voice/config
+          method: get
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+
+  # RAG workflow Lambda functions
+  chatbotQuery:
+    handler: lambda/chatbot_query.handler
+    events:
+      - http:
+          path: /chatbot/{chatbotId}/query
+          method: post
+          cors: true
+          authorizer:
+            type: COGNITO_USER_POOLS
+            authorizerId: !Ref ApiGatewayAuthorizer
+
+  ragCrawler:
+    handler: lambda/rag_crawler.handler
+
+  validateInput:
+    handler: lambda/validate_input.handler
+
+  processDocument:
+    handler: lambda/process_document.handler
+
+  fetchFromApi:
+    handler: lambda/fetch_from_api.handler
+
+  extractText:
+    handler: lambda/extract_text.handler
+
+  generateEmbeddings:
+    handler: lambda/generate_embeddings.handler
+
+  storeEmbeddings:
+    handler: lambda/store_embeddings.handler
+
+  voiceIntegration:
+    handler: lambda/voice_integration.handler
+
+  errorHandler:
+    handler: lambda/error_handler.handler
+
+resources:
+  Resources:
+    # DynamoDB Tables
+    WorkflowTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.WORKFLOW_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: tenantId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+          - AttributeName: tenantId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: TenantIndex
+            KeySchema:
+              - AttributeName: tenantId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    MetadataTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.METADATA_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: tenantId
+            AttributeType: S
+          - AttributeName: itemType
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+          - AttributeName: tenantId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: TenantIndex
+            KeySchema:
+              - AttributeName: tenantId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: TypeIndex
+            KeySchema:
+              - AttributeName: tenantId
+                KeyType: HASH
+              - AttributeName: itemType
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    ConfigTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.CONFIG_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: tenantId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+          - AttributeName: tenantId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: TenantIndex
+            KeySchema:
+              - AttributeName: tenantId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    # S3 Buckets
+    DocumentBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.DOCUMENT_BUCKET}
+        VersioningConfiguration:
+          Status: Enabled
+        LifecycleConfiguration:
+          Rules:
+            - Id: DeleteOldVersions
+              Status: Enabled
+              NoncurrentVersionExpiration:
+                NoncurrentDays: 30
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              AllowedOrigins:
+                - '*'
+              MaxAge: 3000
+
+    AudioBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.AUDIO_BUCKET}
+        VersioningConfiguration:
+          Status: Enabled
+        LifecycleConfiguration:
+          Rules:
+            - Id: DeleteOldFiles
+              Status: Enabled
+              ExpirationInDays: 7
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - HEAD
+              AllowedOrigins:
+                - '*'
+              MaxAge: 3000
+
+    # Queues and Topics
+    DeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-dlq-${self:provider.stage}
+        MessageRetentionPeriod: 1209600  # 14 days
+
+    ErrorNotificationTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:service}-errors-${self:provider.stage}
+        DisplayName: RAG Pipeline Errors
+
+    # Secrets
+    EmbeddingApiSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Name: ${self:service}/embedding-api-${self:provider.stage}
+        Description: API key for embedding service
+        SecretString: '{"apiKey":"dummy-key-replace-in-console"}'
+
+    RedisSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Name: ${self:service}/redis-${self:provider.stage}
+        Description: Redis connection information
+        SecretString: '{"host":"localhost","port":6379,"password":""}'
+
+    LiveKitSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Name: ${self:service}/livekit-${self:provider.stage}
+        Description: LiveKit API credentials
+        SecretString: '{"apiKey":"dummy-key-replace-in-console","apiSecret":"dummy-secret-replace-in-console"}'
+
+    # Step Functions State Machine
+    RagWorkflowStateMachine:
+      Type: AWS::StepFunctions::StateMachine
+      Properties:
+        StateMachineName: ${self:service}-rag-workflow-${self:provider.stage}
+        DefinitionSubstitutions:
+          ValidateInputFunctionArn: !GetAtt ValidateInputLambdaFunction.Arn
+          ErrorHandlerFunctionArn: !GetAtt ErrorHandlerLambdaFunction.Arn
+          CrawlWebsiteFunctionArn: !GetAtt RagCrawlerLambdaFunction.Arn
+          FetchFromApiFunctionArn: !GetAtt FetchFromApiLambdaFunction.Arn
+          ProcessDocumentFunctionArn: !GetAtt ProcessDocumentLambdaFunction.Arn
+          ExtractTextFunctionArn: !GetAtt ExtractTextLambdaFunction.Arn
+          GenerateEmbeddingsFunctionArn: !GetAtt GenerateEmbeddingsLambdaFunction.Arn
+          StoreEmbeddingsFunctionArn: !GetAtt StoreEmbeddingsLambdaFunction.Arn
+          ConfigureMemoryFunctionArn: !GetAtt ConfigureMemoryLambdaFunction.Arn
+          UpdateMetadataFunctionArn: !GetAtt UpdateMetadataLambdaFunction.Arn
+          ScheduleCrawlFunctionArn: !GetAtt ScheduleCrawlLambdaFunction.Arn
+          AnalyzeResultsFunctionArn: !GetAtt AnalyzeResultsLambdaFunction.Arn
+          NotifyCompletionFunctionArn: !GetAtt NotifyCompletionLambdaFunction.Arn
+        DefinitionString: ${file(./infrastructure/terraform/state_machines/rag_workflow.json)}
+        RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+
+    # IAM Roles for Step Functions
+    StepFunctionsExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: states.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        Policies:
+          - PolicyName: StepFunctionsAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource: '*'
+
+    # Cognito authorizer for API Gateway
+    ApiGatewayAuthorizer:
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: CognitoUserPoolAuthorizer
+        Type: COGNITO_USER_POOLS
+        IdentitySource: method.request.header.Authorization
+        RestApiId: !Ref ApiGatewayRestApi
+        ProviderARNs:
+          - !GetAtt UserPool.Arn
+
+    # Cognito User Pool for authentication
+    UserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: ${self:service}-users-${self:provider.stage}
+        AutoVerifiedAttributes:
+          - email
+        Schema:
+          - Name: email
+            Required: true
+            Mutable: true
+          - Name: tenantId
+            AttributeDataType: String
+            Mutable: true
+            Required: false
+            StringAttributeConstraints:
+              MinLength: '1'
+              MaxLength: '256'
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: true
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: true
+            RequireUppercase: true
+
+    # OpenSearch domain for vector search
+    OpenSearchDomain:
+      Type: AWS::OpenSearchService::Domain
+      Properties:
+        DomainName: ${self:service}-search-${self:provider.stage}
+        EngineVersion: "OpenSearch_1.3"
+        ClusterConfig:
+          InstanceType: "t3.small.search"
+          InstanceCount: 1
+          DedicatedMasterEnabled: false
+          ZoneAwarenessEnabled: false
+        EBSOptions:
+          EBSEnabled: true
+          VolumeSize: 20
+          VolumeType: "gp2"
+        EncryptionAtRestOptions:
+          Enabled: true
+        NodeToNodeEncryptionOptions:
+          Enabled: true
+        DomainEndpointOptions:
+          EnforceHTTPS: true
+        AccessPolicies:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+              Action: "es:*"
+              Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${self:service}-search-${self:provider.stage}/*"
+
+  # Custom outputs for reference
+  Outputs:
+    ApiUrl:
+      Description: "API Gateway URL"
+      Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}"
+    UserPoolId:
+      Description: "Cognito User Pool ID"
+      Value: !Ref UserPool
+    DocumentBucketName:
+      Description: "Document S3 Bucket Name"
+      Value: !Ref DocumentBucket
+    WorkflowStateMachine:
+      Description: "RAG Workflow State Machine ARN"
+      Value: !Ref RagWorkflowStateMachine

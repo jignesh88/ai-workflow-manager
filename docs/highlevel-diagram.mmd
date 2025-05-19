@@ -1,0 +1,65 @@
+flowchart TD
+    subgraph "Frontend"
+        A[CloudFront] --> B[S3 Static Website]
+        B --> C[React SPA]
+        C --> D[React Flow UI]
+        C --> E[Stripe-like UI]
+        C --> F[Auth Components]
+    end
+    
+    subgraph "Authentication"
+        F <--> G[Cognito User Pools]
+        G <--> H[Identity Providers]
+    end
+    
+    subgraph "API Layer"
+        C <--> I[API Gateway]
+        I --> J[Lambda Authorizer]
+        J --> K[REST APIs]
+    end
+    
+    subgraph "Workflow Orchestration"
+        K --> L[AWS Step Functions]
+    end
+    
+    subgraph "Processing Services"
+        L --> M[Document Processing]
+        L --> N[API Integration]
+        L --> O[RAG Pipeline]
+        L --> P[Voice Processing]
+    end
+    
+    subgraph "Data Storage"
+        Q[S3 - Documents]
+        R[DynamoDB - Metadata]
+        S[OpenSearch - Vectors]
+        T[ElastiCache - Context]
+        U[RDS - Tenant Config]
+    end
+    
+    subgraph "Tenant Management"
+        V[Tenant Dashboard]
+        W[Tenant Onboarding]
+        X[Tenant Isolation]
+    end
+    
+    M --> Q
+    N --> R
+    O --> S
+    O --> T
+    K --> U
+    C --> V
+    W --> X
+    X --> R
+    X --> Q
+    X --> S
+    X --> T
+    X --> U
+
+    classDef tenant fill:#f96,stroke:#333,stroke-width:2px
+    classDef security fill:#f66,stroke:#333,stroke-width:2px
+    classDef data fill:#6f9,stroke:#333,stroke-width:2px
+    
+    class X,V,W tenant
+    class G,H,J security
+    class Q,R,S,T,U data

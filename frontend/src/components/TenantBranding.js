@@ -1,5 +1,5 @@
 // TenantBranding.js - Component for applying tenant-specific branding
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { useTenant } from '../contexts/TenantContext';
 
 const TenantBranding = () => {

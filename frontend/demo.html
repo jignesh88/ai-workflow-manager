@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Workflow Manager - Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .draggable {
+      cursor: grab;
+    }
+    .draggable:active {
+      cursor: grabbing;
+    }
+    .droppable-highlight {
+      background-color: rgba(79, 70, 229, 0.1);
+      border: 2px dashed #4f46e5;
+    }
+    .node {
+      position: absolute;
+      z-index: 1;
+      transition: box-shadow 0.2s ease, transform 0.1s ease;
+    }
+    .node.selected {
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.4);
+    }
+    .node.potential-connection-target {
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+    }
+    .connector {
+      position: absolute;
+      height: 2px;
+      background-color: #6366f1;
+      transform-origin: left center;
+      z-index: 0;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    #temp-connection {
+      background-color: #9ca3af;
+      height: 2px;
+      position: absolute;
+      transform-origin: left center;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .handle {
+      cursor: crosshair;
+      transition: transform 0.2s ease, background-color 0.2s ease;
+    }
+    .handle:hover {
+      transform: scale(1.5) translate(0, -50%);
+    }
+    .handle-hover {
+      transform: scale(1.5) translate(0, -50%);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4);
+    }
+    .connecting-mode .handle {
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.7);
+      }
+      70% {
+        box-shadow: 0 0 0 5px rgba(99, 102, 241, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
+      }
+    }
+  </style>
+  <script>
+    // Mock data
+    const mockWorkflows = [
+      {
+        id: 'workflow-1',
+        name: 'Sales Support Chatbot',
+        createdAt: '2023-04-10T12:00:00Z',
+        updatedAt: '2023-04-15T14:30:00Z',
+        status: 'active'
+      },
+      {
+        id: 'workflow-2',
+        name: 'Customer Service Agent',
+        createdAt: '2023-04-05T09:45:00Z',
+        updatedAt: '2023-04-12T11:20:00Z',
+        status: 'draft'
+      },
+      {
+        id: 'workflow-3',
+        name: 'Technical Support Bot',
+        createdAt: '2023-03-28T16:15:00Z',
+        updatedAt: '2023-04-08T10:10:00Z',
+        status: 'active'
+      }
+    ];
+
+    // Node types and their configurations
+    const nodeTypes = {
+      rag: {
+        label: 'RAG Pipeline',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-600" viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" /></svg>',
+        bgColor: 'bg-indigo-100',
+        textColor: 'text-indigo-600',
+        borderColor: 'border-indigo-200'
+      },
+      document: {
+        label: 'Document Upload',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd" /></svg>',
+        bgColor: 'bg-blue-100',
+        textColor: 'text-blue-600',
+        borderColor: 'border-blue-200'
+      },
+      api: {
+        label: 'API Integration',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" /></svg>',
+        bgColor: 'bg-green-100',
+        textColor: 'text-green-600',
+        borderColor: 'border-green-200'
+      },
+      voice: {
+        label: 'Voice Integration',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-yellow-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" /></svg>',
+        bgColor: 'bg-yellow-100',
+        textColor: 'text-yellow-600',
+        borderColor: 'border-yellow-200'
+      },
+      output: {
+        label: 'Chatbot Output',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clip-rule="evenodd" /></svg>',
+        bgColor: 'bg-gray-100',
+        textColor: 'text-gray-600',
+        borderColor: 'border-gray-200'
+      }
+    };
+
+    // Track nodes and connections for the canvas
+    let canvasNodes = [];
+    let connections = [];
+    let nextNodeId = 1;
+    let draggedElement = null;
+    let offsetX, offsetY;
+    let isDraggingCanvas = false;
+    let draggingNode = null;
+    let selectedNode = null;
+
+    // Functions
+    function formatDate(dateString) {
+      return new Date(dateString).toLocaleDateString();
+    }
+
+    function goToBuilder(workflowId) {
+      alert(`In a real app, this would navigate to workflow builder for ID: ${workflowId}`);
+    }
+
+    function signOut() {
+      alert('In a real app, this would sign you out');
+    }
+
+    // Initialize the demo with some nodes
+    function initializeDemo() {
+      // Add initial output node
+      addNodeToCanvas('output', 400, 200);
+    }
+
+    // Create node from palette
+    function createNode(type) {
+      if (!nodeTypes[type]) return null;
+      
+      const nodeConfig = nodeTypes[type];
+      const nodeId = `${type}-${nextNodeId++}`;
+      
+      return {
+        id: nodeId,
+        type: type,
+        label: nodeConfig.label,
+        x: 0,
+        y: 0
+      };
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-gray-50">
+  <!-- Header -->
+  <header class="bg-white shadow">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+      <h1 class="text-2xl font-semibold text-gray-900">
+        AI Workflow Manager
+      </h1>
+      <div class="flex items-center space-x-4">
+        <span class="text-sm text-gray-700">
+          Tenant ID: tenant1
+        </span>
+        <button
+          onclick="signOut()"
+          class="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-sm font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+        >
+          Sign Out
+        </button>
+      </div>
+    </div>
+  </header>
+  
+  <!-- Main content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="flex justify-between items-center mb-6">
+      <h2 class="text-xl font-semibold text-gray-900">Your Chatbot Workflows</h2>
+      <button
+        onclick="goToBuilder('new')"
+        class="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="-ml-1 mr-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+        </svg>
+        Create New Workflow
+      </button>
+    </div>
+    
+    <!-- Workflows list -->
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+      <ul class="divide-y divide-gray-200" id="workflow-list">
+        <!-- Will be populated by JavaScript -->
+      </ul>
+    </div>
+
+    <!-- Workflow Builder Preview -->
+    <div class="mt-12 bg-white shadow overflow-hidden sm:rounded-lg p-6">
+      <h2 class="text-xl font-semibold text-gray-900 mb-6">Workflow Builder Preview</h2>
+      
+      <!-- Node Info Panel -->
+      <div id="node-info" class="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-lg" style="display: none"></div>
+      
+      <div class="border border-gray-200 rounded-lg p-4 bg-gray-50 h-96">
+        <div class="flex h-full">
+          <!-- Node Palette -->
+          <div class="w-64 bg-white border-r border-gray-200 p-4 h-full overflow-y-auto">
+            <h3 class="font-medium text-gray-700 mb-4">Nodes</h3>
+            <div class="space-y-3">
+              <div class="bg-white p-3 border border-gray-200 rounded-md shadow-sm draggable flex items-center" 
+                   draggable="true"
+                   data-node-type="rag"
+                   ondragstart="onDragStart(event, 'rag')">
+                <div class="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-600" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+                  </svg>
+                </div>
+                <span>RAG Pipeline</span>
+              </div>
+              
+              <div class="bg-white p-3 border border-gray-200 rounded-md shadow-sm draggable flex items-center"
+                   draggable="true"
+                   data-node-type="document"
+                   ondragstart="onDragStart(event, 'document')">
+                <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd" />
+                  </svg>
+                </div>
+                <span>Document Upload</span>
+              </div>
+              
+              <div class="bg-white p-3 border border-gray-200 rounded-md shadow-sm draggable flex items-center"
+                   draggable="true"
+                   data-node-type="api"
+                   ondragstart="onDragStart(event, 'api')">
+                <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-600" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
+                  </svg>
+                </div>
+                <span>API Integration</span>
+              </div>
+              
+              <div class="bg-white p-3 border border-gray-200 rounded-md shadow-sm draggable flex items-center"
+                   draggable="true"
+                   data-node-type="voice"
+                   ondragstart="onDragStart(event, 'voice')">
+                <div class="w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-yellow-600" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+                  </svg>
+                </div>
+                <span>Voice Integration</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Canvas -->
+          <div id="canvas" class="flex-1 bg-gray-100 h-full relative overflow-hidden">
+            <!-- Nodes will be added here dynamically -->
+            <div id="connections-container"></div>
+            <div id="nodes-container"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  
+  <!-- Footer -->
+  <footer class="bg-white border-t border-gray-200 mt-8">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <p class="text-sm text-gray-500 text-center">
+        &copy; 2023 AI Workflow Manager. All rights reserved.
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // Initialize the canvas and setup event handlers
+    document.addEventListener('DOMContentLoaded', function() {
+      // Initialize the workflow builder with default nodes
+      initializeDemo();
+      
+      // Setup canvas event handlers
+      const canvas = document.getElementById('canvas');
+      canvas.addEventListener('dragover', onDragOver);
+      canvas.addEventListener('drop', onDrop);
+      canvas.addEventListener('click', onCanvasClick);
+      
+      // Load workflow list
+      loadWorkflowList();
+    });
+    
+    // Add a node to the canvas at the specified position
+    function addNodeToCanvas(type, x, y) {
+      const nodeConfig = nodeTypes[type];
+      if (!nodeConfig) return;
+      
+      const nodeId = `${type}-${nextNodeId++}`;
+      const node = {
+        id: nodeId,
+        type,
+        x,
+        y,
+        label: nodeConfig.label
+      };
+      
+      // Store node in our array
+      canvasNodes.push(node);
+      
+      // Create DOM element for the node
+      const nodesContainer = document.getElementById('nodes-container');
+      const nodeElement = document.createElement('div');
+      nodeElement.id = node.id;
+      nodeElement.className = `node rounded-lg px-4 pt-3 pb-2 border-2 ${nodeConfig.borderColor} bg-white shadow-md w-64`;
+      nodeElement.style.left = `${x}px`;
+      nodeElement.style.top = `${y}px`;
+      
+      // Make node draggable within canvas
+      nodeElement.setAttribute('draggable', 'true');
+      nodeElement.addEventListener('dragstart', (e) => onNodeDragStart(e, node));
+      nodeElement.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectNode(node);
+      });
+      
+      // Add node content
+      nodeElement.innerHTML = `
+        <div class="flex items-center mb-2">
+          <div class="w-8 h-8 rounded-full ${nodeConfig.bgColor} flex items-center justify-center mr-3">
+            ${nodeConfig.icon}
+          </div>
+          <div>
+            <h4 class="text-sm font-medium text-gray-900">${nodeConfig.label}</h4>
+            <p class="text-xs text-gray-500">${type === 'rag' ? '1 data source' : 
+                                              type === 'output' ? 'Final chatbot output' : 
+                                              `${type.charAt(0).toUpperCase() + type.slice(1)} setup`}</p>
+          </div>
+        </div>
+        
+        ${type === 'rag' || type === 'document' || type === 'api' || type === 'voice' ? 
+          `<div class="handle handle-right absolute w-3 h-3 rounded-full bg-${nodeConfig.textColor.split('-')[1]} border-2 border-white right-0 top-1/2 transform -translate-y-1/2" data-handle="source"></div>` : ''}
+        
+        ${type === 'rag' || type === 'document' || type === 'api' || type === 'voice' || type === 'output' ? 
+          `<div class="handle handle-left absolute w-3 h-3 rounded-full bg-${nodeConfig.textColor.split('-')[1]} border-2 border-white left-0 top-1/2 transform -translate-y-1/2" data-handle="target"></div>` : ''}
+      `;
+      
+      nodesContainer.appendChild(nodeElement);
+      
+      // Allow connections between nodes
+      const handles = nodeElement.querySelectorAll('.handle');
+      handles.forEach(handle => {
+        handle.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+          startConnection(node, handle.getAttribute('data-handle'));
+        });
+      });
+      
+      return node;
+    }
+    
+    // Drag event handlers
+    function onDragStart(event, nodeType) {
+      event.dataTransfer.setData('application/nodeType', nodeType);
+      event.dataTransfer.effectAllowed = 'move';
+    }
+    
+    function onNodeDragStart(event, node) {
+      draggingNode = node;
+      
+      // Calculate offset from node's top-left corner
+      const nodeElement = document.getElementById(node.id);
+      const nodeRect = nodeElement.getBoundingClientRect();
+      
+      offsetX = event.clientX - nodeRect.left;
+      offsetY = event.clientY - nodeRect.top;
+      
+      event.dataTransfer.setData('application/nodeId', node.id);
+      event.dataTransfer.effectAllowed = 'move';
+    }
+    
+    function onDragOver(event) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      
+      // Highlight drop area
+      const canvas = document.getElementById('canvas');
+      canvas.classList.add('droppable-highlight');
+    }
+    
+    function onDrop(event) {
+      event.preventDefault();
+      
+      // Remove highlight
+      const canvas = document.getElementById('canvas');
+      canvas.classList.remove('droppable-highlight');
+      
+      // Get canvas coordinates
+      const canvasRect = canvas.getBoundingClientRect();
+      
+      // Handle node dropped from palette
+      const nodeType = event.dataTransfer.getData('application/nodeType');
+      if (nodeType) {
+        const x = event.clientX - canvasRect.left - 64; // Adjust for node width
+        const y = event.clientY - canvasRect.top - 30;  // Adjust for node height
+        
+        addNodeToCanvas(nodeType, x, y);
+        return;
+      }
+      
+      // Handle existing node being repositioned
+      const nodeId = event.dataTransfer.getData('application/nodeId');
+      if (nodeId && draggingNode) {
+        // Update node position
+        const x = event.clientX - canvasRect.left - offsetX;
+        const y = event.clientY - canvasRect.top - offsetY;
+        
+        moveNode(draggingNode, x, y);
+        
+        // Update connections
+        updateConnections();
+        
+        draggingNode = null;
+      }
+    }
+    
+    // Move node to new position
+    function moveNode(node, x, y) {
+      // Update node data
+      node.x = x;
+      node.y = y;
+      
+      // Update DOM element
+      const nodeElement = document.getElementById(node.id);
+      if (nodeElement) {
+        nodeElement.style.left = `${x}px`;
+        nodeElement.style.top = `${y}px`;
+      }
+    }
+    
+    // Handle selection of nodes
+    function selectNode(node) {
+      // Clear previous selection
+      if (selectedNode) {
+        const prevSelectedElement = document.getElementById(selectedNode.id);
+        if (prevSelectedElement) {
+          prevSelectedElement.style.borderColor = '';
+          prevSelectedElement.style.boxShadow = '';
+        }
+      }
+      
+      // Set new selection
+      selectedNode = node;
+      const nodeElement = document.getElementById(node.id);
+      
+      if (nodeElement) {
+        nodeElement.style.borderColor = '#4f46e5';
+        nodeElement.style.boxShadow = '0 0 0 3px rgba(79, 70, 229, 0.4)';
+      }
+      
+      // In a real app, this would show the configuration panel
+      showNodeInfo(node);
+    }
+    
+    // Handle canvas click (deselect)
+    function onCanvasClick() {
+      if (selectedNode) {
+        const nodeElement = document.getElementById(selectedNode.id);
+        if (nodeElement) {
+          nodeElement.style.borderColor = '';
+          nodeElement.style.boxShadow = '';
+        }
+        selectedNode = null;
+        
+        // Hide node info
+        document.getElementById('node-info').style.display = 'none';
+      }
+    }
+    
+    // Connection handling
+    let startConnectionNode = null;
+    let startConnectionHandle = null;
+    let isCreatingConnection = false;
+    let tempConnectionLine = null;
+    
+    function startConnection(node, handleType) {
+      startConnectionNode = node;
+      startConnectionHandle = handleType;
+      isCreatingConnection = true;
+      
+      // Create temporary connection line
+      const tempLine = document.createElement('div');
+      tempLine.id = 'temp-connection';
+      tempLine.className = 'connector';
+      
+      // Start position is at the handle
+      const nodeElement = document.getElementById(node.id);
+      const sourceX = handleType === 'source' ? 
+        nodeElement.offsetLeft + nodeElement.offsetWidth :
+        nodeElement.offsetLeft;
+      const sourceY = nodeElement.offsetTop + nodeElement.offsetHeight / 2;
+      
+      tempLine.style.left = `${sourceX}px`;
+      tempLine.style.top = `${sourceY}px`;
+      tempLine.style.width = '0px';
+      
+      // Add to connections container
+      document.getElementById('connections-container').appendChild(tempLine);
+      tempConnectionLine = tempLine;
+      
+      // Add event listeners
+      document.addEventListener('mousemove', trackConnection);
+      document.addEventListener('mouseup', completeConnection);
+      
+      // Add connection mode class to canvas
+      document.getElementById('canvas').classList.add('connecting-mode');
+      
+      // Highlight potential targets
+      highlightValidTargets();
+    }
+    
+    function trackConnection(event) {
+      if (!isCreatingConnection || !tempConnectionLine || !startConnectionNode) return;
+      
+      const canvas = document.getElementById('canvas');
+      const canvasRect = canvas.getBoundingClientRect();
+      
+      // Get source node position
+      const nodeElement = document.getElementById(startConnectionNode.id);
+      const sourceX = startConnectionHandle === 'source' ? 
+        nodeElement.offsetLeft + nodeElement.offsetWidth :
+        nodeElement.offsetLeft;
+      const sourceY = nodeElement.offsetTop + nodeElement.offsetHeight / 2;
+      
+      // Get mouse position relative to canvas
+      const mouseX = event.clientX - canvasRect.left;
+      const mouseY = event.clientY - canvasRect.top;
+      
+      // Calculate line properties
+      const dx = mouseX - sourceX;
+      const dy = mouseY - sourceY;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+      
+      // Update temporary connection line
+      tempConnectionLine.style.width = `${length}px`;
+      tempConnectionLine.style.transform = `rotate(${angle}deg)`;
+      
+      // Check if hovering over a valid handle
+      checkHandleHover(event);
+    }
+    
+    function checkHandleHover(event) {
+      // Get all handles of the opposite type
+      const oppositeHandleType = startConnectionHandle === 'source' ? 'target' : 'source';
+      const handles = document.querySelectorAll(`.handle[data-handle="${oppositeHandleType}"]`);
+      
+      let hoveredHandle = null;
+      
+      // Check each handle
+      handles.forEach(handle => {
+        const handleRect = handle.getBoundingClientRect();
+        
+        // Check if mouse is over this handle
+        if (event.clientX >= handleRect.left && event.clientX <= handleRect.right &&
+            event.clientY >= handleRect.top && event.clientY <= handleRect.bottom) {
+          hoveredHandle = handle;
+          handle.classList.add('handle-hover');
+        } else {
+          handle.classList.remove('handle-hover');
+        }
+      });
+    }
+    
+    function highlightValidTargets() {
+      // Get all nodes on canvas
+      const oppositeHandleType = startConnectionHandle === 'source' ? 'target' : 'source';
+      
+      // Highlight all nodes with compatible handles
+      canvasNodes.forEach(node => {
+        if (node.id === startConnectionNode.id) return; // Skip self
+        
+        const nodeElement = document.getElementById(node.id);
+        const handles = nodeElement.querySelectorAll(`.handle[data-handle="${oppositeHandleType}"]`);
+        
+        if (handles.length > 0) {
+          nodeElement.classList.add('potential-connection-target');
+        }
+      });
+    }
+    
+    function completeConnection(event) {
+      // Clean up event listeners
+      document.removeEventListener('mousemove', trackConnection);
+      document.removeEventListener('mouseup', completeConnection);
+      
+      // Remove temporary connection line
+      if (tempConnectionLine) {
+        tempConnectionLine.remove();
+        tempConnectionLine = null;
+      }
+      
+      // Remove connecting mode class from canvas
+      document.getElementById('canvas').classList.remove('connecting-mode');
+      
+      // Remove highlight from potential targets
+      document.querySelectorAll('.potential-connection-target').forEach(node => {
+        node.classList.remove('potential-connection-target');
+      });
+      
+      // Remove highlight from handles
+      document.querySelectorAll('.handle-hover').forEach(handle => {
+        handle.classList.remove('handle-hover');
+      });
+      
+      // Find target node if mouse is over a valid handle
+      const canvas = document.getElementById('canvas');
+      const canvasRect = canvas.getBoundingClientRect();
+      
+      let targetNode = null;
+      let targetHandle = null;
+      
+      // Find which handle the mouse is over
+      const oppositeHandleType = startConnectionHandle === 'source' ? 'target' : 'source';
+      const handles = document.querySelectorAll(`.handle[data-handle="${oppositeHandleType}"]`);
+      
+      handles.forEach(handle => {
+        const handleRect = handle.getBoundingClientRect();
+        
+        // Check if mouse is over this handle
+        if (event.clientX >= handleRect.left && event.clientX <= handleRect.right &&
+            event.clientY >= handleRect.top && event.clientY <= handleRect.bottom) {
+          
+          // Get the node this handle belongs to
+          const nodeElement = handle.closest('.node');
+          const nodeId = nodeElement.id;
+          
+          // Find node in our array
+          const foundNode = canvasNodes.find(n => n.id === nodeId);
+          if (foundNode) {
+            targetNode = foundNode;
+            targetHandle = oppositeHandleType;
+          }
+        }
+      });
+      
+      // Create connection if we have a valid target
+      if (startConnectionNode && targetNode) {
+        // Determine source and target based on handle types
+        if (startConnectionHandle === 'source' && targetHandle === 'target') {
+          createConnection(startConnectionNode, targetNode);
+        } else if (startConnectionHandle === 'target' && targetHandle === 'source') {
+          createConnection(targetNode, startConnectionNode);
+        }
+      }
+      
+      // Reset connection state
+      isCreatingConnection = false;
+      startConnectionNode = null;
+      startConnectionHandle = null;
+    }
+    
+    function createConnection(sourceNode, targetNode) {
+      const connection = {
+        id: `connection-${sourceNode.id}-${targetNode.id}`,
+        source: sourceNode.id,
+        target: targetNode.id
+      };
+      
+      // Add to connections array
+      connections.push(connection);
+      
+      // Draw connection
+      updateConnections();
+    }
+    
+    function updateConnections() {
+      const container = document.getElementById('connections-container');
+      container.innerHTML = '';
+      
+      connections.forEach(connection => {
+        const sourceElement = document.getElementById(connection.source);
+        const targetElement = document.getElementById(connection.target);
+        
+        if (sourceElement && targetElement) {
+          const sourceRect = sourceElement.getBoundingClientRect();
+          const targetRect = targetElement.getBoundingClientRect();
+          const canvasRect = document.getElementById('canvas').getBoundingClientRect();
+          
+          // Calculate connection points
+          const sourceX = sourceElement.offsetLeft + sourceElement.offsetWidth;
+          const sourceY = sourceElement.offsetTop + sourceElement.offsetHeight / 2;
+          const targetX = targetElement.offsetLeft;
+          const targetY = targetElement.offsetTop + targetElement.offsetHeight / 2;
+          
+          // Calculate line length and angle
+          const dx = targetX - sourceX;
+          const dy = targetY - sourceY;
+          const length = Math.sqrt(dx * dx + dy * dy);
+          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+          
+          // Create connection line
+          const line = document.createElement('div');
+          line.id = connection.id;
+          line.className = 'connector';
+          line.style.width = `${length}px`;
+          line.style.left = `${sourceX}px`;
+          line.style.top = `${sourceY}px`;
+          line.style.transform = `rotate(${angle}deg)`;
+          
+          container.appendChild(line);
+        }
+      });
+    }
+    
+    // Show info about selected node
+    function showNodeInfo(node) {
+      const nodeInfo = document.getElementById('node-info');
+      nodeInfo.style.display = 'block';
+      nodeInfo.innerHTML = `
+        <h3 class="text-lg font-medium mb-2">Node Settings: ${node.label}</h3>
+        <p class="text-sm text-gray-500 mb-4">Configure this node's properties and connections.</p>
+        <div class="flex justify-end">
+          <button class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">
+            Edit Configuration
+          </button>
+        </div>
+      `;
+    }
+    
+    // Populate workflow list
+    function loadWorkflowList() {
+      const workflowList = document.getElementById('workflow-list');
+      
+      mockWorkflows.forEach(workflow => {
+        const li = document.createElement('li');
+        li.className = 'px-6 py-4 flex items-center justify-between hover:bg-gray-50';
+        
+        li.innerHTML = `
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center">
+              <p class="text-sm font-medium text-indigo-600 truncate">${workflow.name}</p>
+              <span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                workflow.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+              }">
+                ${workflow.status}
+              </span>
+            </div>
+            <p class="mt-1 text-xs text-gray-500">
+              Created: ${formatDate(workflow.createdAt)} · 
+              Updated: ${formatDate(workflow.updatedAt)}
+            </p>
+          </div>
+          <div class="flex space-x-2">
+            <button
+              onclick="goToBuilder('${workflow.id}')"
+              class="inline-flex items-center px-2.5 py-1.5 border border-gray-300 shadow-sm text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              Edit
+            </button>
+            <button
+              class="inline-flex items-center px-2.5 py-1.5 border border-gray-300 shadow-sm text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              Preview
+            </button>
+          </div>
+        `;
+        
+        workflowList.appendChild(li);
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+flowchart TD
+    subgraph "Tenant Isolation"
+        A[Tenant ID in JWT Claims] --> B[Resource Access Control]
+        
+        subgraph "Data Isolation"
+            B --> C[S3 Prefixes<br/>tenant-id/documents/*]
+            B --> D[DynamoDB Partition Keys<br/>tenant-id as PK]
+            B --> E[OpenSearch Indices<br/>tenant-id-vectors]
+            B --> F[ElastiCache Keys<br/>tenant-id:context:*]
+            B --> G[RDS Schema<br/>tenant_id_schema]
+        end
+        
+        subgraph "Compute Isolation"
+            B --> H[Lambda Concurrency<br/>Per Tenant Limits]
+            B --> I[Step Functions<br/>Tenant-specific State Machines]
+            B --> J[API Gateway<br/>Tenant-specific Rate Limits]
+        end
+        
+        subgraph "Security Isolation"
+            B --> K[IAM Roles<br/>Tenant-scoped Permissions]
+            B --> L[KMS Keys<br/>Tenant-specific Encryption]
+            B --> M[Secrets Manager<br/>Tenant-specific Secrets]
+        end
+    end
+    
+    classDef data fill:#6f9,stroke:#333,stroke-width:2px
+    classDef compute fill:#69f,stroke:#333,stroke-width:2px
+    classDef security fill:#f66,stroke:#333,stroke-width:2px
+    
+    class C,D,E,F,G data
+    class H,I,J compute
+    class K,L,M security
